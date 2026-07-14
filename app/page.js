@@ -2,6 +2,8 @@ import { supabase } from "@/lib/supabaseClient";
 import ArticleSelector from "./ArticleSelector";
 
 export const dynamic = "force-dynamic"; // always fetch fresh, never statically cache this page
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 
 export default async function HomePage() {
   const { data: articles, error } = await supabase
