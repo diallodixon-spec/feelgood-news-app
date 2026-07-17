@@ -1,13 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export default function ArticleSelector({ articles }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState(null);
   const [results, setResults] = useState([]); // [{ id, title, talkingPoints, error }]
+  const [editedText, setEditedText] = useState({}); // { [id]: string } — user's edited copy
   const [copiedId, setCopiedId] = useState(null);
+  const [playingId, setPlayingId] = useState(null);
+  const [loadingAudioId, setLoadingAudioId] = useState(null); // id currently loading for Play/Download click
+  const [preparingIds, setPreparingIds] = useState(new Set()); // ids being pre-generated in the background
+  const [audioError, setAudioError] = useState({}); // { [id]: string }
+  const audioRefs = useRef({}); // { [id]: HTMLAudioElement }
+  const audioUrlRefs = useRef({}); // { [id]: objectURL }
+  const audioTextRefs = useRef({}); // { [id]: text the cached audio was generated from }
+  const pendingGenerations = useRef({}); // { [id]: Promise } — in-flight generation, so Play doesn't duplicate a background one
 
   const maxRank = Math.max(...articles.map((a) => a.rank), 1);
 
@@ -17,13 +26,151 @@ export default function ArticleSelector({ articles }) {
     );
   }
 
-  async function handleCopy(id, text) {
+  function handleEdit(id, value) {
+    setEditedText((prev) => ({ ...prev, [id]: value }));
+    // Text changed — any cached or in-flight audio for the old text is now stale.
+    // Next play/download (or the caller) will need to regenerate.
+  }
+
+  async function handleCopy(id, title) {
+    const text = editedText[id] ?? "";
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(`${title}\n\n${text}`);
       setCopiedId(id);
       setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 2000);
     } catch (err) {
       console.error("Copy failed:", err);
+    }
+  }
+
+  // Core generator — reused by background pre-generation, Play, and Download.
+  // Caches by (id, text) so unrelated calls for the same still-current text
+  // share one in-flight request instead of firing duplicates.
+  function generateAudioUrl(id, text) {
+    if (audioUrlRefs.current[id] && audioTextRefs.current[id] === text) {
+      return Promise.resolve(audioUrlRefs.current[id]);
+    }
+    if (pendingGenerations.current[id]?.text === text) {
+      return pendingGenerations.current[id].promise;
+    }
+
+    const promise = fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `TTS request failed with status ${res.status}`);
+        }
+        return res.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        if (audioUrlRefs.current[id]) {
+          URL.revokeObjectURL(audioUrlRefs.current[id]);
+        }
+        audioUrlRefs.current[id] = url;
+        audioTextRefs.current[id] = text;
+        return url;
+      })
+      .finally(() => {
+        delete pendingGenerations.current[id];
+      });
+
+    pendingGenerations.current[id] = { text, promise };
+    return promise;
+  }
+
+  // Fire off audio generation for every processed article immediately,
+  // in parallel, so it's likely already cached by the time someone clicks Play.
+  function prepareAudioInBackground(items) {
+    const ids = items.map((i) => i.id);
+    setPreparingIds((prev) => new Set([...prev, ...ids]));
+
+    items.forEach(({ id, text }) => {
+      generateAudioUrl(id, text)
+        .catch((err) => {
+          // Don't surface background failures loudly — Play will retry and
+          // show the error there if it still fails at that point.
+          console.error(`Background audio prep failed for ${id}:`, err.message);
+        })
+        .finally(() => {
+          setPreparingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        });
+    });
+  }
+
+  async function handlePlay(id) {
+    if (playingId === id) {
+      audioRefs.current[id]?.pause();
+      setPlayingId(null);
+      return;
+    }
+
+    if (playingId && audioRefs.current[playingId]) {
+      audioRefs.current[playingId].pause();
+      setPlayingId(null);
+    }
+
+    const text = editedText[id];
+    if (!text || text.trim().length === 0) return;
+
+    setLoadingAudioId(id);
+    setAudioError((prev) => ({ ...prev, [id]: null }));
+
+    try {
+      const url = await generateAudioUrl(id, text);
+
+      let audio = audioRefs.current[id];
+      if (!audio || audio.src !== url) {
+        audio = new Audio(url);
+        audio.onended = () => setPlayingId((current) => (current === id ? null : current));
+        audioRefs.current[id] = audio;
+      }
+
+      audio.currentTime = 0;
+      audio.play();
+      setPlayingId(id);
+    } catch (err) {
+      setAudioError((prev) => ({ ...prev, [id]: err.message }));
+    } finally {
+      setLoadingAudioId(null);
+    }
+  }
+
+  async function handleDownload(id, title) {
+    const text = editedText[id];
+    if (!text || text.trim().length === 0) return;
+
+    setLoadingAudioId(id);
+    setAudioError((prev) => ({ ...prev, [id]: null }));
+
+    try {
+      const url = await generateAudioUrl(id, text);
+
+      const filename =
+        title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 60) || "talking-points";
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${filename}.wav`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      setAudioError((prev) => ({ ...prev, [id]: err.message }));
+    } finally {
+      setLoadingAudioId(null);
     }
   }
 
@@ -33,6 +180,7 @@ export default function ArticleSelector({ articles }) {
     setIsProcessing(true);
     setError(null);
     setResults([]);
+    setEditedText({});
 
     try {
       const res = await fetch("/api/process-articles", {
@@ -47,7 +195,21 @@ export default function ArticleSelector({ articles }) {
       }
 
       const data = await res.json();
-      setResults(data.results || []);
+      const newResults = data.results || [];
+      setResults(newResults);
+
+      const initialEdits = {};
+      const readyForAudio = [];
+      for (const result of newResults) {
+        if (result.talkingPoints) {
+          initialEdits[result.id] = result.talkingPoints;
+          readyForAudio.push({ id: result.id, text: result.talkingPoints });
+        }
+      }
+      setEditedText(initialEdits);
+
+      // Kick off audio generation for everything right away, in the background
+      prepareAudioInBackground(readyForAudio);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -59,9 +221,6 @@ export default function ArticleSelector({ articles }) {
     <div>
       <ul className="space-y-3 mb-8">
         {articles.map((article) => {
-          // Rank 1 = most feel-good = brightest glow on the row itself.
-          // Glow tapers toward the bottom of this week's batch, so intensity
-          // is real information, not decoration — just no numeral attached.
           const intensity = 1 - (article.rank - 1) / Math.max(maxRank - 1, 1);
           const glowAlpha = 0.1 + intensity * 0.3;
           const glowSpread = 10 + intensity * 30;
@@ -128,7 +287,7 @@ export default function ArticleSelector({ articles }) {
                   <h3 className="font-medium leading-snug">{result.title}</h3>
                   {result.talkingPoints && (
                     <button
-                      onClick={() => handleCopy(result.id, `${result.title}\n\n${result.talkingPoints}`)}
+                      onClick={() => handleCopy(result.id, result.title)}
                       className={`shrink-0 rounded-md border px-3 py-1 text-xs font-medium transition ${
                         copiedId === result.id
                           ? "border-transparent bg-primary text-primary-foreground"
@@ -141,9 +300,40 @@ export default function ArticleSelector({ articles }) {
                 </div>
 
                 {result.talkingPoints ? (
-                  <p className="text-sm leading-relaxed text-foreground/90">
-                    {result.talkingPoints}
-                  </p>
+                  <>
+                    <textarea
+                      value={editedText[result.id] ?? ""}
+                      onChange={(e) => handleEdit(result.id, e.target.value)}
+                      rows={5}
+                      className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-relaxed text-foreground/90 focus:outline-none focus:ring-1 focus:ring-indigo focus:border-indigo/50"
+                    />
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        onClick={() => handlePlay(result.id)}
+                        disabled={loadingAudioId === result.id}
+                        className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs font-medium text-muted-foreground transition hover:border-indigo/50 hover:text-indigo disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {loadingAudioId === result.id
+                          ? "Loading…"
+                          : playingId === result.id
+                          ? "⏸ Pause"
+                          : "▶ Play"}
+                      </button>
+                      <button
+                        onClick={() => handleDownload(result.id, result.title)}
+                        disabled={loadingAudioId === result.id}
+                        className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs font-medium text-muted-foreground transition hover:border-indigo/50 hover:text-indigo disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {loadingAudioId === result.id ? "Loading…" : "⬇ Download"}
+                      </button>
+                      {preparingIds.has(result.id) && loadingAudioId !== result.id && (
+                        <span className="text-xs text-muted-foreground/70">preparing audio…</span>
+                      )}
+                      {audioError[result.id] && (
+                        <span className="text-xs text-destructive">{audioError[result.id]}</span>
+                      )}
+                    </div>
+                  </>
                 ) : (
                   <p className="text-sm text-destructive">
                     {result.error || "No talking points generated."}

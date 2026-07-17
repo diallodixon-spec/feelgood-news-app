@@ -11,7 +11,7 @@ const supabaseAdmin = createClient(
 
 const together = new Together({ apiKey: process.env.TOGETHER_API_KEY });
 
-const MODEL = "openai/gpt-oss-120b"; // same model sortnews.py uses for ranking
+const MODEL = "openai/gpt-oss-20b"; // same model sortnews.py uses for ranking
 
 function buildPrompt(title, fullText) {
   return `You are writing talking points for a news article.
@@ -21,7 +21,7 @@ Article title: ${title}
 Article text:
 ${fullText}
 
-Write a single flowing paragraph (not a list) of talking points a reporter could use as the basis for an on-air script segment about this story. Cover the key facts, who is involved, and why it's a positive/uplifting story. Keep it factual and grounded only in what's in the article text above — do not invent details. Write only the paragraph, no preamble, no headers, no markdown.`;
+Write a single paragraph that sound natural when read aloud by a radio news presenter. Aim for 3-5 concise sentences, and avoid long or complex sentences, semicolons, and excessive subordinate clauses. Each sentence should communicate one key point and flow smoothly into the next. Cover the key facts, and why it's a positive or uplifting story.  Use only facts from the article. Output only the paragraph.`;
 }
 
 export async function POST(request) {
