@@ -11,7 +11,7 @@ const supabaseAdmin = createClient(
 
 const together = new Together({ apiKey: process.env.TOGETHER_API_KEY });
 
-const MODEL = "openai/gpt-oss-20b"; // same model sortnews.py uses for ranking
+const MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"; // same model sortnews.py uses for ranking
 
 function buildPrompt(title, fullText) {
   return `You are writing talking points for a news article.

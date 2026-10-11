@@ -270,8 +270,8 @@ export default function ArticleSelector({ articles }) {
         className="rounded-lg bg-primary px-5 py-2.5 font-medium text-primary-foreground glow-indigo-soft transition hover:glow-indigo disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
       >
         {isProcessing
-          ? "Generating talking points…"
-          : `Process${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
+          ? "Processing..."
+          : `Generate talking points${selectedIds.length ? ` (${selectedIds.length})` : ""}`}
       </button>
 
       {results.length > 0 && (
