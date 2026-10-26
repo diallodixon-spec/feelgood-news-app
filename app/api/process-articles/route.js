@@ -70,7 +70,7 @@ export async function POST(request) {
     try {
       const completion = await together.chat.completions.create({
         model: MODEL,
-        max_tokens: 600,
+        max_tokens: 1800,
         temperature: 0.4,
         messages: [
           { role: "user", content: buildPrompt(article.title, article.full_text) },
@@ -78,6 +78,11 @@ export async function POST(request) {
       });
 
       const talkingPoints = completion.choices?.[0]?.message?.content?.trim();
+
+
+
+
+
 
       if (!talkingPoints) {
         results.push({
